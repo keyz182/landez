@@ -10,6 +10,8 @@ from StringIO import StringIO
 
 from mbutil import disk_to_mbtiles
 
+from multiprocessing import Pool
+
 from . import (DEFAULT_TILES_URL, DEFAULT_TILES_SUBDOMAINS,
                DEFAULT_TMP_DIR, DEFAULT_FILEPATH, DEFAULT_TILE_SIZE,
                DEFAULT_TILE_FORMAT)
@@ -226,6 +228,21 @@ class TilesManager(object):
         return out.getvalue()
 
 
+def gather(tb, (z, x, y)):
+    files_dir, tile_name = tb.cache.tile_file((z, x, y))
+    tmp_dir = os.path.join(tb.tmp_dir, files_dir)
+    if not os.path.isdir(tmp_dir):
+        os.makedirs(tmp_dir)
+    tilecontent = tb.tile((z, x, y))
+    tilepath = os.path.join(tmp_dir, tile_name)
+    with open(tilepath, 'wb') as f:
+        f.write(tilecontent)
+    if len(tb.grid_fields) > 0:
+        gridcontent = tb.grid((z, x, y))
+        gridpath = "%s.%s" % (os.path.splitext(tilepath)[0], 'grid.json')
+        with open(gridpath, 'w') as f:
+            f.write(gridcontent)
+
 class MBTilesBuilder(TilesManager):
     def __init__(self, **kwargs):
         """
@@ -243,6 +260,8 @@ class MBTilesBuilder(TilesManager):
         self.tmp_dir = kwargs.get('tmp_dir', DEFAULT_TMP_DIR)
         self.tmp_dir = os.path.join(self.tmp_dir, basename)
         self.tile_format = kwargs.get('tile_format', DEFAULT_TILE_FORMAT)
+
+        self.concurrency = kwargs.get('concurrency', 2)
 
         # Number of tiles in total
         self.nbtiles = 0
@@ -309,15 +328,20 @@ class MBTilesBuilder(TilesManager):
             raise EmptyCoverageError(_("No tiles are covered by bounding boxes : %s") % self._bboxes)
         logger.debug(_("%s tiles to be packaged.") % self.nbtiles)
 
+        pool = Pool(processes=self.concurrency)
         # Go through whole list of tiles and gather them in tmp_dir
         self.rendered = 0
         for (z, x, y) in tileslist:
             try:
-                self._gather((z, x, y))
+                #self._gather((z, x, y))
+                pool.apply_async(gather,[self,(z, x, y)])
             except Exception as e:
                 logger.warn(e)
                 if not self.ignore_errors:
                     raise
+
+        pool.close()
+        pool.join()
 
         logger.debug(_("%s tiles were missing.") % self.rendered)
 
